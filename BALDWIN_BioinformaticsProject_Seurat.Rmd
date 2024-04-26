@@ -1,0 +1,176 @@
+---
+title: "BALDWIN_RNAseq_668"
+output: html_notebook
+---
+
+#Cell Cycle Regression Vignette
+```{r}
+library(Seurat)
+
+# Read in the expression matrix The first row is a header row, the first column is rownames
+exp.mat <- read.table(file = "C:/Users/obald/OneDrive/Documents/Bio668/cell_cycle_vignette_files/nestorawa_forcellcycle_expressionMatrix.txt",
+    header = TRUE, as.is = TRUE, row.names = 1)
+
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.  We can
+# segregate this list into markers of G2/M phase and markers of S phase
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+# Create our Seurat object and complete the initalization steps
+marrow <- CreateSeuratObject(counts = Matrix::Matrix(as.matrix(exp.mat), sparse = T))
+marrow <- NormalizeData(marrow)
+marrow <- FindVariableFeatures(marrow, selection.method = "vst")
+marrow <- ScaleData(marrow, features = rownames(marrow))
+```
+
+```{r}
+marrow <- RunPCA(marrow, features = VariableFeatures(marrow), ndims.print = 6:10, nfeatures.print = 10)
+```
+
+```{r}
+DimHeatmap(marrow, dims = c(8, 10))
+```
+
+```{r}
+marrow <- CellCycleScoring(marrow, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+# view cell cycle scores and phase assignments
+head(marrow[[]])
+```
+
+```{r}
+# Visualize the distribution of cell cycle markers across
+RidgePlot(marrow, features = c("PCNA", "TOP2A", "MCM6", "MKI67"), ncol = 2)
+```
+
+```{r}
+# Running a PCA on cell cycle genes reveals, unsurprisingly, that cells separate entirely by
+# phase
+marrow <- RunPCA(marrow, features = c(s.genes, g2m.genes))
+DimPlot(marrow)
+```
+
+```{r}
+marrow <- ScaleData(marrow, vars.to.regress = c("S.Score", "G2M.Score"), features = rownames(marrow))
+```
+
+```{r}
+# Now, a PCA on the variable genes no longer returns components associated with cell cycle
+marrow <- RunPCA(marrow, features = VariableFeatures(marrow), nfeatures.print = 10)
+```
+
+```{r}
+# When running a PCA on only cell cycle genes, cells no longer separate by cell-cycle phase
+marrow <- RunPCA(marrow, features = c(s.genes, g2m.genes))
+DimPlot(marrow)
+```
+
+```{r}
+#Alternate workflow
+marrow$CC.Difference <- marrow$S.Score - marrow$G2M.Score
+marrow <- ScaleData(marrow, vars.to.regress = "CC.Difference", features = rownames(marrow))
+
+# cell cycle effects strongly mitigated in PCA
+marrow <- RunPCA(marrow, features = VariableFeatures(marrow), nfeatures.print = 10)
+
+# when running a PCA on cell cycle genes, actively proliferating cells remain distinct from G1
+# cells however, within actively proliferating cells, G2M and S phase cells group together
+marrow <- RunPCA(marrow, features = c(s.genes, g2m.genes))
+DimPlot(marrow)
+```
+
+#Weighted Nearest Neighbor Analysis Vignette
+```{r}
+install.packages("devtools")
+```
+
+```{r}
+devtools::install_github('satijalab/seurat-data')
+```
+
+```{r}
+library(Seurat)
+library(SeuratData)
+library(cowplot)
+library(dplyr)
+```
+
+```{r}
+InstallData("bmcite")
+bm <- LoadData(ds = "bmcite")
+```
+
+```{r}
+DefaultAssay(bm) <- 'RNA'
+bm <- NormalizeData(bm) %>% FindVariableFeatures() %>% ScaleData() %>% RunPCA()
+
+DefaultAssay(bm) <- 'ADT'
+# we will use all ADT features for dimensional reduction
+# we set a dimensional reduction name to avoid overwriting the 
+VariableFeatures(bm) <- rownames(bm[["ADT"]])
+bm <- NormalizeData(bm, normalization.method = 'CLR', margin = 2) %>% 
+  ScaleData() %>% RunPCA(reduction.name = 'apca')
+```
+
+```{r}
+# Identify multimodal neighbors. These will be stored in the neighbors slot, 
+# and can be accessed using bm[['weighted.nn']]
+# The WNN graph can be accessed at bm[["wknn"]], 
+# and the SNN graph used for clustering at bm[["wsnn"]]
+# Cell-specific modality weights can be accessed at bm$RNA.weight
+bm <- FindMultiModalNeighbors(
+  bm, reduction.list = list("pca", "apca"), 
+  dims.list = list(1:30, 1:18), modality.weight.name = "RNA.weight"
+)
+```
+
+```{r}
+bm <- RunUMAP(bm, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+bm <- FindClusters(bm, graph.name = "wsnn", algorithm = 3, resolution = 2, verbose = FALSE)
+```
+
+```{r}
+p1 <- DimPlot(bm, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5) + NoLegend()
+p2 <- DimPlot(bm, reduction = 'wnn.umap', group.by = 'celltype.l2', label = TRUE, repel = TRUE, label.size = 2.5) + NoLegend()
+p1 + p2
+```
+
+```{r}
+bm <- RunUMAP(bm, reduction = 'pca', dims = 1:30, assay = 'RNA', 
+              reduction.name = 'rna.umap', reduction.key = 'rnaUMAP_')
+bm <- RunUMAP(bm, reduction = 'apca', dims = 1:18, assay = 'ADT', 
+              reduction.name = 'adt.umap', reduction.key = 'adtUMAP_')
+```
+
+```{r}
+p3 <- DimPlot(bm, reduction = 'rna.umap', group.by = 'celltype.l2', label = TRUE, 
+              repel = TRUE, label.size = 2.5) + NoLegend()
+p4 <- DimPlot(bm, reduction = 'adt.umap', group.by = 'celltype.l2', label = TRUE, 
+              repel = TRUE, label.size = 2.5) + NoLegend()
+p3 + p4
+```
+
+```{r}
+p5 <- FeaturePlot(bm, features = c("adt_CD45RA","adt_CD16","adt_CD161"),
+                  reduction = 'wnn.umap', max.cutoff = 2, 
+                  cols = c("lightgrey","darkgreen"), ncol = 3)
+p6 <- FeaturePlot(bm, features = c("rna_TRDC","rna_MPO","rna_AVP"), 
+                  reduction = 'wnn.umap', max.cutoff = 3, ncol = 3)
+p5 / p6
+```
+
+```{r}
+ VlnPlot(bm, features = "RNA.weight", group.by = 'celltype.l2', sort = TRUE, pt.size = 0.1) +
+  NoLegend()
+```
+
+
+```{r}
+## to make the visualization easier, subset T cell clusters
+celltype.names <- levels(bm)
+tcell.names <- grep("1|2|3", celltype.names,value = TRUE)
+tcells <- subset(bm, idents = tcell.names)
+CoveragePlot(tcells, region = 'CD8A', features = 'CD8A', assay = 'ATAC', expression.assay = 'SCT', peaks = FALSE)
+```
+#This would have been the last plot, but it does not work with this data set as the 'levels' for the bm dataset are different than those in the downloadable one (they are returning chromosome number rather than cell type). The second half of this vignette requires you to enter email address, name and other info to download the data, but both run neighbor and cluster analysis, as well as similar plots. The cell type plot is the only difference, but I cannot get the code to work for this dataset. 
+
